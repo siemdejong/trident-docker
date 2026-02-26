@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    paths:
+      - 'Dockerfile'
+  pull_request:
+    paths:
+      - 'Dockerfile'
+  schedule:
+    - cron: '0 0 1 * *' # Runs monthly on the 1st at midnight UTC
+  workflow_dispatch:
+
+env:
+  MINIMUM_PYTHON_VERSION: '3.10'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  check-version:
+    name: Check latest trident version
+    runs-on: ubuntu-latest
+    outputs:
+       CURRENT_VERSION: ${{ steps.current-version.outputs.CURRENT_VERSION }}
+    steps:
+      - name: Install Python ${{ env.MINIMUM_PYTHON_VERSION }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.MINIMUM_PYTHON_VERSION }}
+      - uses: actions/checkout@v5
+        with:
+          repository: 'mahmoodlab/TRIDENT'
+      - name: Get current package version
+        id: current-version
+        run: |
+          CURRENT_VERSION=$(python -c "import tomllib; print(tomllib.loads(open('pyproject.toml').read())['project']['version'])")
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+  build-docker:
+    needs: check-version
+    runs-on: ubuntu-latest
+    env:
+      CURRENT_VERSION: ${{ needs.check-version.outputs.CURRENT_VERSION }}
+    name: Build Docker image
+    steps:
+      - name: Fail if CURRENT_VERSION is empty
+        run: |
+          if [ -z "${{ env.CURRENT_VERSION }}" ]; then
+            echo "CURRENT_VERSION not set, aborting build."
+            exit 1
+          fi
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          build-args: trident_version=${{ env.CURRENT_VERSION }}
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}:${{ env.CURRENT_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  push-docker:
+    needs:
+      - check-version
+      - build-docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    permissions:
+      packages: write
+    env:
+      CURRENT_VERSION: ${{ needs.check-version.outputs.CURRENT_VERSION }}
+    name: Push Docker image
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Push Docker image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          build-args: trident_version=${{ env.CURRENT_VERSION }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}:${{ env.CURRENT_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

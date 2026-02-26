@@ -1,0 +1,12 @@
+[project]
+name = "trident-docker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "trident",
+]
+
+[tool.uv.sources]
+trident = { git = "https://github.com/mahmoodlab/trident.git" }
